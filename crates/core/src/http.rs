@@ -21,7 +21,9 @@ pub fn client() -> &'static reqwest::Client {
         reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
+            // No total request timeout: large jars/assets legitimately take
+            // longer. A read timeout still catches stalled connections.
+            .read_timeout(Duration::from_secs(60))
             .pool_max_idle_per_host(32)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
@@ -33,7 +35,7 @@ pub fn client() -> &'static reqwest::Client {
 }
 
 pub async fn get_bytes(url: &str) -> Result<bytes::Bytes> {
-    let response = client().get(url).send().await?;
+    let response = client().get(url).timeout(Duration::from_secs(60)).send().await?;
     let status = response.status();
     if !status.is_success() {
         return Err(Error::msg(format!("GET {url} failed with HTTP {status}")));

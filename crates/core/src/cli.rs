@@ -9,6 +9,10 @@ pub enum Invocation {
     },
     /// Headless benchmark harness.
     Bench { json: bool },
+    /// Download a vanilla version into the shared cache.
+    Install { version: String },
+    /// Development-only smoke launch with a placeholder token.
+    DevLaunch { version: String },
     Version,
     Help,
 }
@@ -19,6 +23,7 @@ Kestrel — a fast Minecraft: Java Edition launcher for Linux
 USAGE:
     kestrel [OPTIONS]
     kestrel bench [--json]
+    kestrel install <VERSION>
     kestrel --profile <NAME> [--join <HOST:PORT>]
 
 OPTIONS:
@@ -29,6 +34,7 @@ OPTIONS:
 
 COMMANDS:
     bench                  Measure cold-start and hot-path timings
+    install <VERSION>      Download a vanilla version into the shared cache
 ";
 
 pub fn parse_args<I>(args: I) -> Result<Invocation>
@@ -44,6 +50,18 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "bench" => bench = true,
+            "install" => {
+                let version = iter
+                    .next()
+                    .ok_or_else(|| Error::msg("install needs a version id"))?;
+                return Ok(Invocation::Install { version });
+            }
+            "dev-launch" => {
+                let version = iter
+                    .next()
+                    .ok_or_else(|| Error::msg("dev-launch needs a version id"))?;
+                return Ok(Invocation::DevLaunch { version });
+            }
             "--json" => json = true,
             "-h" | "--help" => return Ok(Invocation::Help),
             "-V" | "--version" => return Ok(Invocation::Version),
@@ -126,6 +144,31 @@ mod tests {
             parse_args(args(&["bench", "--json"])).unwrap(),
             Invocation::Bench { json: true }
         );
+    }
+
+    #[test]
+    fn install_command() {
+        assert_eq!(
+            parse_args(args(&["install", "1.20.4"])).unwrap(),
+            Invocation::Install {
+                version: "1.20.4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn dev_launch_command() {
+        assert_eq!(
+            parse_args(args(&["dev-launch", "1.20.4"])).unwrap(),
+            Invocation::DevLaunch {
+                version: "1.20.4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn install_needs_version() {
+        assert!(parse_args(args(&["install"])).is_err());
     }
 
     #[test]

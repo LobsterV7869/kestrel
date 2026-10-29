@@ -22,7 +22,7 @@ original geometric mark.
 Built in stages; see `PERFORMANCE.md` for measured numbers.
 
 - [x] Stage 1 — Tauri scaffold, instant cache-first UI, `bench` harness (see PERFORMANCE.md)
-- [ ] Stage 2 — Version manifest, downloads, shared cache, vanilla launch
+- [x] Stage 2 — Version manifest, downloads, shared cache, vanilla launch
 - [ ] Stage 3 — Microsoft auth (device code) + keyring
 - [ ] Stage 4 — Java runtime management
 - [ ] Stage 5 — Fabric, Modrinth browser, Optimized preset
@@ -59,12 +59,35 @@ cargo build --release -p kestrel-app --features custom-protocol
 > `dist/`. `npm run tauri build` does both automatically and produces the
 > AppImage/.deb (stage 9).
 
-Benchmarks:
+Benchmarks and headless commands:
 
 ```bash
 cargo build --release -p kestrel-app --features custom-protocol
 ./target/release/kestrel bench
+./target/release/kestrel install 1.20.4     # warm the shared cache
+KESTREL_DEV_AUTH=1 ./target/release/kestrel dev-launch 1.20.4
 ```
+
+`dev-launch` is a development smoke test: it uses a placeholder token (never
+persisted, disabled unless `KESTREL_DEV_AUTH=1`) and launches the vanilla title
+screen. It is not an offline-mode feature. Real accounts arrive in stage 3.
+
+### Layout
+
+```
+~/.local/share/kestrel/
+  shared/versions/<id>/          version JSON, client jar, extracted natives
+  shared/libraries/              Maven-style library store
+  shared/assets/{indexes,objects}
+  shared/mods/                   content-addressed mod store (stage 5)
+  shared/java/                   managed JVMs (stage 4)
+  instances/<profile>/game/      worlds, mods, configs (per profile)
+  cache/                         file index, version manifest
+~/.config/kestrel/               state.json, config.json
+```
+
+Every profile references the shared store directly; jars, libraries and assets
+are verified once and never duplicated.
 
 ## CLI
 

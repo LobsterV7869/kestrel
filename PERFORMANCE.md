@@ -71,6 +71,26 @@ Interpretation:
 Debug builds of the SHA-1 path are ~30× slower (7 MiB/s); always benchmark in
 release. Never ship debug timing numbers.
 
+## Stage 2 — vanilla install and launch (2026-10-29)
+
+| Operation | Time | Notes |
+|---|---:|---|
+| cold install of 1.20.4 | 123.5 s | 52 libraries + 3811 assets, ~600 MB, concurrency 24–32 |
+| warm `kestrel install 1.20.4` | 0.42–0.80 s | 3811 stat checks against the file index, no network |
+| click to title screen | ~35 s | first run, empty page cache, no AppCDS; debug launcher |
+
+The warm install proves the index works: nothing is re-hashed or re-downloaded.
+The remaining ~0.4 s is 3863 `stat` calls; stage 6 will trust the index for a
+whole tree and only revalidate when the asset index changes.
+
+Launch timing includes JVM start, 198 datafixer optimisations (~0.7 s), LWJGL
+init and texture atlas creation. Stage 6 attacks this with page-cache pre-warm,
+AppCDS and JVM flags; the target is under 10 s to the title screen on warm disk.
+
+Observed harmless noise on 1.20.4: the narrator fails to load `libflite.so` and
+the dev token gets a 401 when authlib fetches user properties. Neither stops the
+game from reaching the main menu.
+
 ## Optimizations tried
 
 | Change | Effect | Kept? |

@@ -13,14 +13,22 @@
 //! - [`servers`]   Server address parsing, SRV and status ping (stage 7)
 //! - [`bench`]     Timing harness used by `kestrel bench`
 
+pub mod auth;
 pub mod bench;
+pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod download;
 pub mod error;
 pub mod http;
+pub mod install;
+pub mod instances;
+pub mod java;
+pub mod launch;
 pub mod logging;
 pub mod paths;
 pub mod state;
+pub mod versions;
 
 pub use error::{Error, Result};
 

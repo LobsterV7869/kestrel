@@ -10,9 +10,16 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use kestrel_core::{
+    auth::AuthSession,
     bench,
+    cache::SharedCache,
     cli::{self, Invocation},
     config::Config,
+    error::Error,
+    install,
+    instances::InstancePaths,
+    java,
+    launch::{self, LaunchOptions},
     logging, paths,
     state::AppState,
 };
@@ -97,6 +104,8 @@ pub fn entry() {
             println!("kestrel {} ({})", env!("CARGO_PKG_VERSION"), kestrel_core::APP_NAME);
         }
         Ok(Invocation::Help) => print!("{}", cli::HELP),
+        Ok(Invocation::Install { version }) => run_install(version),
+        Ok(Invocation::DevLaunch { version }) => run_dev_launch(version),
         Ok(Invocation::Gui { profile, join }) => run_gui(profile, join),
         Err(err) => {
             eprintln!("error: {err}\n\n{}", cli::HELP);
@@ -161,4 +170,136 @@ fn run_gui(profile: Option<String>, join: Option<String>) {
         })
         .run(tauri::generate_context!())
         .expect("error while running Kestrel");
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, Error> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::msg(format!("tokio runtime: {e}")))
+}
+
+fn run_install(version: String) {
+    let rt = match runtime() {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let result = rt.block_on(async {
+        let cache = SharedCache::open()?;
+        let started = std::time::Instant::now();
+        let installed = install::install_version(&version, &cache).await?;
+        Ok::<_, Error>((installed, started.elapsed()))
+    });
+    match result {
+        Ok((installed, elapsed)) => {
+            println!(
+                "installed {} in {:.1}s",
+                installed.id,
+                elapsed.as_secs_f64()
+            );
+            println!("  client jar   {}", installed.jar.display());
+            println!("  libraries    {}", installed.classpath.len());
+            println!("  natives      {}", installed.natives_dir.display());
+            println!("  assets index {}", installed.assets_index);
+            println!("  java         >= {}", installed.java_major());
+        }
+        Err(err) => {
+            eprintln!("install failed: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_dev_launch(version: String) {
+    let rt = match runtime() {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let result: Result<(), Error> = rt.block_on(async {
+        let auth = AuthSession::dev()?;
+        let cache = SharedCache::open()?;
+        println!("installing {version} ...");
+        let installed = install::install_version(&version, &cache).await?;
+        let java = java::find_for(installed.java_major()).ok_or_else(|| {
+            Error::msg(format!(
+                "no Java {} runtime found; install one or set PATH",
+                installed.java_major()
+            ))
+        })?;
+        let instance = InstancePaths::new("_dev");
+        instance.ensure()?;
+        let memory_mb = launch::default_memory_mb();
+        let options = LaunchOptions {
+            version: installed.json.clone(),
+            version_name: installed.id.clone(),
+            client_jar: installed.jar.clone(),
+            classpath: installed.classpath.clone(),
+            natives_dir: installed.natives_dir.clone(),
+            assets_dir: installed.assets_dir.clone(),
+            assets_index: installed.assets_index.clone(),
+            game_dir: instance.game_dir.clone(),
+            auth,
+            java: java.clone(),
+            memory_mb,
+            extra_jvm: Vec::new(),
+            extra_game: Vec::new(),
+            quick_play: None,
+            width: None,
+            height: None,
+        };
+        let spec = launch::build(&options)?;
+        println!(
+            "using Java {} ({}) at {}",
+            java.version,
+            java.major,
+            java.path.display()
+        );
+        println!("heap {memory_mb} MiB, game dir {}", instance.game_dir.display());
+        println!("classpath entries: {}", spec.classpath_len());
+        let mut child = launch::spawn(&spec).await?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::msg("missing stdout pipe"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::msg("missing stderr pipe"))?;
+        let out_task = tokio::spawn(stream_output(stdout, false));
+        let err_task = tokio::spawn(stream_output(stderr, true));
+        let status = child.wait().await?;
+        let _ = out_task.await;
+        let _ = err_task.await;
+        if status.success() {
+            println!("Minecraft exited cleanly");
+            Ok(())
+        } else {
+            Err(Error::msg(format!("Minecraft exited with {status}")))
+        }
+    });
+    if let Err(err) = result {
+        eprintln!("launch failed: {err}");
+        std::process::exit(1);
+    }
+}
+
+async fn stream_output<R>(reader: R, stderr: bool)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if stderr {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
 }
