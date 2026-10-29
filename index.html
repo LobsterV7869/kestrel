@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Kestrel</title>
+    <!--
+      Critical CSS inlined so the window paints the app chrome before the JS
+      bundle is parsed. The bundle is small, but first paint must not wait on it.
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0e1116;
+        --panel: #151a22;
+        --panel-2: #1b222c;
+        --text: #e6e9ee;
+        --muted: #8a93a3;
+        --accent: #6ee7a8;
+        --accent-2: #3ba7ff;
+        --border: #232c38;
+      }
+      * { box-sizing: border-box; }
+      html, body, #root { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+      }
+      .boot {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        height: 100%;
+      }
+      .boot-side { background: var(--panel); border-right: 1px solid var(--border); }
+      .boot-main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        color: var(--muted);
+      }
+      .boot-logo {
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: var(--text);
+      }
+      .boot-logo span { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="boot" aria-hidden="true">
+        <div class="boot-side"></div>
+        <div class="boot-main">
+          <div class="boot-logo">KEST<span>R</span>EL</div>
+          <div>Starting…</div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
