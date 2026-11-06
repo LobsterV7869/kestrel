@@ -350,3 +350,141 @@ button:disabled {
   font-size: 13px;
   cursor: pointer;
 }
+
+.account {
+  padding: 4px 7px;
+  margin-left: -7px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.account:hover {
+  background: var(--panel-2);
+}
+
+.dot.online {
+  background: var(--accent);
+  box-shadow: 0 0 7px rgb(110 231 168 / 60%);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(4 7 10 / 66%);
+  backdrop-filter: blur(3px);
+}
+
+.modal {
+  width: min(470px, 100%);
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.close {
+  padding: 2px 7px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.close:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.signin,
+.signed-in,
+.device {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.signin > p {
+  margin: 0;
+}
+
+.error {
+  margin: 0;
+  color: #ff9fa9;
+  font-size: 13px;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.device-code {
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  user-select: all;
+}
+
+.link {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent-2);
+  font-size: 13px;
+  text-align: left;
+  text-decoration: underline;
+}
+
+.link:hover {
+  filter: brightness(1.2);
+}
+
+.account-big {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-avatar.big {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 18px;
+}
+
+code {
+  padding: 0 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}

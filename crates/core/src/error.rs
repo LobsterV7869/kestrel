@@ -34,6 +34,12 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     Config(String),
 
+    #[error("Microsoft session expired; sign in again")]
+    AuthExpired,
+
+    #[error("this Microsoft account does not own Minecraft: Java Edition")]
+    NoOwnership,
+
     #[error("{0}")]
     Msg(String),
 }

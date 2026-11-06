@@ -10,7 +10,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use kestrel_core::{
-    auth::AuthSession,
+    auth::{self, AuthSession},
     bench,
     cache::SharedCache,
     cli::{self, Invocation},
@@ -21,7 +21,7 @@ use kestrel_core::{
     java,
     launch::{self, LaunchOptions},
     logging, paths,
-    state::AppState,
+    state::{AccountSummary, AppState},
 };
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -36,6 +36,10 @@ struct AppCtx {
     config: Config,
     launch: LaunchRequest,
     backend_ready_ms: f64,
+    pending_login: Mutex<Option<auth::PendingLogin>>,
+    /// Serialises session restore/refresh so two callers never rotate the same
+    /// refresh token at once.
+    auth_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Serialize)]
@@ -101,7 +105,11 @@ pub fn entry() {
             }
         }
         Ok(Invocation::Version) => {
-            println!("kestrel {} ({})", env!("CARGO_PKG_VERSION"), kestrel_core::APP_NAME);
+            println!(
+                "kestrel {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                kestrel_core::APP_NAME
+            );
         }
         Ok(Invocation::Help) => print!("{}", cli::HELP),
         Ok(Invocation::Install { version }) => run_install(version),
@@ -130,6 +138,8 @@ fn run_gui(profile: Option<String>, join: Option<String>) {
         config,
         launch: LaunchRequest { profile, join },
         backend_ready_ms: bench::since_start_ms(),
+        pending_login: Mutex::new(None),
+        auth_lock: tokio::sync::Mutex::new(()),
     };
 
     let mut timeline = bench::Timeline::new();
@@ -148,7 +158,12 @@ fn run_gui(profile: Option<String>, join: Option<String>) {
             bootstrap,
             save_state,
             log_timing,
-            get_config
+            get_config,
+            auth_start,
+            auth_poll,
+            auth_restore,
+            auth_logout,
+            open_external
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -165,6 +180,30 @@ fn run_gui(profile: Option<String>, join: Option<String>) {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = handle.emit("kestrel://background-idle", ());
+            });
+
+            // Silent session refresh after the first frame. Emitting an event
+            // keeps the UI in sync even if it missed the initial state.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let ctx = handle.state::<AppCtx>();
+                if ctx.config.azure_client_id.trim().is_empty() {
+                    return;
+                }
+                let started = std::time::Instant::now();
+                let result = restore_account(&ctx).await;
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "silent account restore finished"
+                );
+                match result {
+                    Ok(account) => {
+                        let _ = handle.emit("kestrel://account", account);
+                    }
+                    Err(err) => {
+                        let _ = handle.emit("kestrel://auth-error", err);
+                    }
+                }
             });
             Ok(())
         })
@@ -260,7 +299,10 @@ fn run_dev_launch(version: String) {
             java.major,
             java.path.display()
         );
-        println!("heap {memory_mb} MiB, game dir {}", instance.game_dir.display());
+        println!(
+            "heap {memory_mb} MiB, game dir {}",
+            instance.game_dir.display()
+        );
         println!("classpath entries: {}", spec.classpath_len());
         let mut child = launch::spawn(&spec).await?;
         let stdout = child
@@ -302,4 +344,165 @@ where
             println!("{line}");
         }
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthPoll {
+    status: &'static str,
+    account: Option<AccountSummary>,
+}
+
+impl AuthPoll {
+    fn new(status: &'static str, account: Option<AccountSummary>) -> Self {
+        Self { status, account }
+    }
+}
+
+fn pending_guard(ctx: &AppCtx) -> std::sync::MutexGuard<'_, Option<auth::PendingLogin>> {
+    ctx.pending_login.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn persist_account(ctx: &AppCtx, session: &AuthSession) -> Result<AccountSummary, String> {
+    let summary = session.summary();
+    let mut state = ctx.state.lock().unwrap_or_else(|e| e.into_inner());
+    state.accounts = vec![summary.clone()];
+    state.touch();
+    state.save().map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+fn clear_account(ctx: &AppCtx) -> Result<(), String> {
+    let mut state = ctx.state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.accounts.is_empty() {
+        return Ok(());
+    }
+    state.accounts.clear();
+    state.touch();
+    state.save().map_err(|e| e.to_string())
+}
+
+async fn restore_account(ctx: &AppCtx) -> Result<Option<AccountSummary>, String> {
+    let client_id = ctx.config.azure_client_id.trim().to_string();
+    if client_id.is_empty() {
+        clear_account(ctx)?;
+        return Ok(None);
+    }
+    let _guard = ctx.auth_lock.lock().await;
+    match auth::restore(&client_id).await {
+        Ok(Some(session)) => persist_account(ctx, &session).map(Some),
+        Ok(None) => {
+            clear_account(ctx)?;
+            Ok(None)
+        }
+        Err(Error::AuthExpired) => {
+            clear_account(ctx)?;
+            Err("Microsoft session expired; sign in again.".to_string())
+        }
+        Err(Error::NoOwnership) => {
+            clear_account(ctx)?;
+            Err("This Microsoft account does not own Minecraft: Java Edition.".to_string())
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn auth_start(ctx: State<'_, AppCtx>) -> Result<auth::DeviceCodeInfo, String> {
+    let client_id = ctx.config.azure_client_id.trim().to_string();
+    tracing::info!("starting Microsoft device-code flow");
+    let info = auth::start_device_code(&client_id).await.map_err(|e| {
+        tracing::warn!(error = %e, "device-code request failed");
+        e.to_string()
+    })?;
+    *pending_guard(&ctx) = Some(auth::PendingLogin::new(info.clone()));
+    Ok(info)
+}
+
+#[tauri::command]
+async fn auth_poll(app: tauri::AppHandle, ctx: State<'_, AppCtx>) -> Result<AuthPoll, String> {
+    let client_id = ctx.config.azure_client_id.trim().to_string();
+    let pending = pending_guard(&ctx).clone();
+    let Some(pending) = pending else {
+        return Err("no sign-in is in progress".to_string());
+    };
+    if pending.is_expired() {
+        *pending_guard(&ctx) = None;
+        return Ok(AuthPoll::new("expired", None));
+    }
+    let outcome = auth::poll_device_code(&client_id, &pending.info.device_code)
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::debug!(?outcome, "device-code poll");
+    match outcome {
+        auth::PollOutcome::Pending => Ok(AuthPoll::new("pending", None)),
+        auth::PollOutcome::SlowDown => Ok(AuthPoll::new("slowDown", None)),
+        auth::PollOutcome::Expired => {
+            *pending_guard(&ctx) = None;
+            Ok(AuthPoll::new("expired", None))
+        }
+        auth::PollOutcome::Declined => {
+            *pending_guard(&ctx) = None;
+            Ok(AuthPoll::new("declined", None))
+        }
+        auth::PollOutcome::Complete(token) => {
+            // The device code is single-use; never keep it around after it
+            // produced a token, even if the Xbox/Minecraft chain fails.
+            *pending_guard(&ctx) = None;
+            // Serialise with startup restore so an in-flight refresh cannot
+            // overwrite the tokens this login just stored.
+            let _guard = ctx.auth_lock.lock().await;
+            let (session, _tokens) = auth::complete_login(&client_id, token)
+                .await
+                .map_err(|e| e.to_string())?;
+            let account = persist_account(&ctx, &session)?;
+            let _ = app.emit("kestrel://account", Some(account.clone()));
+            Ok(AuthPoll::new("success", Some(account)))
+        }
+    }
+}
+
+#[tauri::command]
+async fn auth_restore(
+    app: tauri::AppHandle,
+    ctx: State<'_, AppCtx>,
+) -> Result<Option<AccountSummary>, String> {
+    let result = restore_account(&ctx).await;
+    match &result {
+        Ok(account) => {
+            let _ = app.emit("kestrel://account", account.clone());
+        }
+        Err(err) => {
+            let _ = app.emit("kestrel://auth-error", err.clone());
+        }
+    }
+    result
+}
+
+#[tauri::command]
+async fn auth_logout(app: tauri::AppHandle, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let _guard = ctx.auth_lock.lock().await;
+    auth::delete_tokens().map_err(|e| e.to_string())?;
+    *pending_guard(&ctx) = None;
+    clear_account(&ctx)?;
+    let none: Option<AccountSummary> = None;
+    let _ = app.emit("kestrel://account", none);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("refusing to open a non-HTTP URL".to_string());
+    }
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not open the browser: {e}"))?;
+    Ok(())
 }

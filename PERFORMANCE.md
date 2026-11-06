@@ -91,6 +91,29 @@ Observed harmless noise on 1.20.4: the narrator fails to load `libflite.so` and
 the dev token gets a 401 when authlib fetches user properties. Neither stops the
 game from reaching the main menu.
 
+## Stage 3 — Microsoft sign-in (2026-10-29)
+
+Three consecutive release runs after wiring the keyring and auth commands:
+
+| Run | backend_ready | window_ready | bundle start | JS mounted | first paint |
+|----:|--------------:|-------------:|-------------:|-----------:|------------:|
+| 1 | 7.2 ms | 1085 ms | 68 ms | 87 ms | 2057 ms |
+| 2 | 3.8 ms | 391 ms | 103 ms | 133 ms | 1143 ms |
+| 3 | 2.0 ms | 358 ms | 35 ms | 54 ms | 1164 ms |
+
+| Operation | Time | Notes |
+|---|---:|---|
+| keyring lookup, no stored session | 26 ms | on a background task after the first frame |
+| `auth_start` failure roundtrip | ~0.5 s | fake client ID; Microsoft returns HTTP 400 |
+
+Startup stays within stage 1 noise: identity work is **not** on the first-paint
+path. The window/webview still dominates the ~1.1–2.1 s spread; run 1 overlapped
+desktop load. A real device-code login is network-bound (user approval + token
+exchange), so it is not a startup metric. Full sign-in could not be exercised
+without an Azure public client ID; the device-code, token, Xbox, XSTS and
+Minecraft responses are parsed by typed structs with unit tests for the error
+and secret-handling paths.
+
 ## Optimizations tried
 
 | Change | Effect | Kept? |
@@ -101,6 +124,8 @@ game from reaching the main menu.
 | `WEBKIT_DISABLE_DMABUF_RENDERER=1` | no measurable gain | no |
 | `WEBKIT_DISABLE_COMPOSITING_MODE=1` | no measurable gain | no |
 | `custom-protocol` asset embedding | needed for release to run without a dev server | yes |
+| Keyring restore async, after first frame | 26 ms lookup hidden; no first-paint change | yes |
+| Keep device code only in Rust memory | never serialized to the webview or logs | yes |
 
 ## Next measurements (stage 6)
 

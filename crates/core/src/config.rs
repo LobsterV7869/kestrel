@@ -25,7 +25,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            azure_client_id: String::new(),
+            azure_client_id: "965848f0-57e1-49d6-817e-9e9e8d5bf932".to_string(),
             default_memory_mb: None,
             global_jvm_args: Vec::new(),
             auto_join_last_server: false,

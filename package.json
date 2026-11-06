@@ -14,9 +14,12 @@
     "solid-js": "^1.9"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.12.4",
     "typescript": "^5.7",
     "vite": "^6.0.0",
     "vite-plugin-solid": "^2.11"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

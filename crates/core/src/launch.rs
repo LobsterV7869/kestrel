@@ -420,6 +420,7 @@ mod tests {
                 user_type: "msa".into(),
                 xuid: String::new(),
                 client_id: String::new(),
+                expires_at: 0,
             },
             java: JavaInstall {
                 path: PathBuf::from("/usr/bin/java"),

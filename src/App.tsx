@@ -1,7 +1,20 @@
-import { createMemo, createSignal, For, onMount, Show } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { api } from "./lib/ipc";
-import type { AppState, Bootstrap } from "./lib/types";
+import type {
+  AccountSummary,
+  AppState,
+  Bootstrap,
+  DeviceCodeInfo,
+} from "./lib/types";
 
 const PRESET_LABEL: Record<string, string> = {
   optimized: "Optimized",
@@ -16,6 +29,14 @@ const LOADER_LABEL: Record<string, string> = {
   neoforge: "NeoForge",
   forge: "Forge",
 };
+
+type SignInStatus =
+  | "idle"
+  | "starting"
+  | "waiting"
+  | "expired"
+  | "declined"
+  | "error";
 
 function ago(ms: number | null): string {
   if (!ms) return "never";
@@ -34,9 +55,28 @@ export default function App() {
   const [startupMs, setStartupMs] = createSignal<number | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
 
+  const [accountOpen, setAccountOpen] = createSignal(false);
+  const [device, setDevice] = createSignal<DeviceCodeInfo | null>(null);
+  const [signInStatus, setSignInStatus] = createSignal<SignInStatus>("idle");
+  const [authError, setAuthError] = createSignal<string | null>(null);
+  const [copied, setCopied] = createSignal(false);
+
+  let pollGeneration = 0;
+  let pollTimer: number | undefined;
+  let pollIntervalMs = 5000;
+  let unlistenAccount: UnlistenFn | undefined;
+  let unlistenAuthError: UnlistenFn | undefined;
+
   onMount(async () => {
     void api.logTiming("js_mounted", performance.now(), "ui").catch(() => {});
     try {
+      unlistenAccount = await api
+        .onAccount((account) => applyAccount(account))
+        .catch(() => undefined);
+      unlistenAuthError = await api
+        .onAuthError((message) => setNotice(message))
+        .catch(() => undefined);
+
       const t = await api.bootstrap();
       setBoot(t);
       setState(t.state);
@@ -61,12 +101,20 @@ export default function App() {
       );
 
       await api.onBackgroundIdle(() => {});
+      void refreshAccount();
     } catch (err) {
       setNotice(String(err));
       void api
         .logTiming("bootstrap_error", performance.now(), String(err))
         .catch(() => {});
     }
+  });
+
+  onCleanup(() => {
+    pollGeneration++;
+    if (pollTimer) clearTimeout(pollTimer);
+    unlistenAccount?.();
+    unlistenAuthError?.();
   });
 
   const profiles = () => state()?.profiles ?? [];
@@ -91,6 +139,142 @@ export default function App() {
     } catch (err) {
       setNotice(String(err));
     }
+  }
+
+  function applyAccount(account: AccountSummary | null) {
+    const s = state();
+    if (!s) return;
+    setState({ ...s, accounts: account ? [account] : [] });
+  }
+
+  async function refreshAccount() {
+    try {
+      const account = await api.authRestore();
+      if (account) applyAccount(account);
+    } catch {
+      // The backend emits kestrel://auth-error with the user-facing message.
+    }
+  }
+
+  function stopPolling() {
+    pollGeneration++;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
+    }
+  }
+
+  function closeAccount() {
+    stopPolling();
+    setAccountOpen(false);
+    setDevice(null);
+    setSignInStatus("idle");
+    setAuthError(null);
+  }
+
+  async function startSignIn() {
+    if (!boot()?.azureConfigured) {
+      setAuthError(
+        "Microsoft sign-in is not configured. Set azureClientId in ~/.config/kestrel/config.json.",
+      );
+      setSignInStatus("error");
+      return;
+    }
+    stopPolling();
+    setDevice(null);
+    setAuthError(null);
+    setCopied(false);
+    setSignInStatus("starting");
+    try {
+      const info = await api.authStart();
+      setDevice(info);
+      setSignInStatus("waiting");
+      pollIntervalMs = Math.max(info.interval, 5) * 1000;
+      schedulePoll(pollGeneration, pollIntervalMs);
+    } catch (err) {
+      setAuthError(String(err));
+      setSignInStatus("error");
+      setDevice(null);
+    }
+  }
+
+  function schedulePoll(generation: number, delayMs: number) {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(() => void pollOnce(generation), delayMs);
+  }
+
+  async function pollOnce(generation: number) {
+    if (generation !== pollGeneration) return;
+    try {
+      const result = await api.authPoll();
+      if (generation !== pollGeneration) return;
+      switch (result.status) {
+        case "pending":
+          setSignInStatus("waiting");
+          schedulePoll(generation, pollIntervalMs);
+          break;
+        case "slowDown":
+          pollIntervalMs += 5000;
+          setSignInStatus("waiting");
+          schedulePoll(generation, pollIntervalMs);
+          break;
+        case "success":
+          stopPolling();
+          if (result.account) applyAccount(result.account);
+          setDevice(null);
+          setSignInStatus("idle");
+          setAccountOpen(false);
+          setNotice(
+            `Signed in as ${result.account?.username ?? "your account"}.`,
+          );
+          break;
+        case "expired":
+          stopPolling();
+          setDevice(null);
+          setSignInStatus("expired");
+          break;
+        case "declined":
+          stopPolling();
+          setDevice(null);
+          setSignInStatus("declined");
+          break;
+      }
+    } catch (err) {
+      if (generation !== pollGeneration) return;
+      stopPolling();
+      setAuthError(String(err));
+      setSignInStatus("error");
+    }
+  }
+
+  async function signOut() {
+    try {
+      await api.authLogout();
+      applyAccount(null);
+      setNotice("Signed out.");
+      closeAccount();
+    } catch (err) {
+      setAuthError(String(err));
+    }
+  }
+
+  async function copyCode() {
+    const current = device();
+    if (!current) return;
+    try {
+      await navigator.clipboard.writeText(current.userCode);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setNotice("Couldn't copy the code; select it manually.");
+    }
+  }
+
+  function openAccount() {
+    setAuthError(null);
+    setSignInStatus("idle");
+    setDevice(null);
+    setAccountOpen(true);
   }
 
   return (
@@ -140,15 +324,15 @@ export default function App() {
         </div>
 
         <div class="sidebar-foot">
-          <div class="account">
-            <span class="dot" />
+          <button class="account" onClick={openAccount} title="Microsoft account">
+            <span class="dot" classList={{ online: accounts().length > 0 }} />
             <Show
               when={accounts().length > 0}
-              fallback={<span class="muted">No account</span>}
+              fallback={<span class="muted">Sign in</span>}
             >
               <span>{accounts()[0].username}</span>
             </Show>
-          </div>
+          </button>
           <div class="version">v{boot()?.appVersion ?? "0.1.0"}</div>
         </div>
       </aside>
@@ -164,13 +348,18 @@ export default function App() {
             </p>
           </div>
           <div class="actions">
+            <Show when={accounts().length === 0}>
+              <button class="btn primary" onClick={openAccount}>
+                Sign in
+              </button>
+            </Show>
             <button class="btn ghost" disabled title="Stage 8">
               New profile
             </button>
             <button
               class="btn primary"
               disabled
-              title="Launching lands in stage 2"
+              title="Launch from the UI arrives with profiles in stage 8"
             >
               Launch
             </button>
@@ -258,6 +447,151 @@ export default function App() {
 
         <footer class="legal">{boot()?.legal ?? ""}</footer>
 
+        <Show when={accountOpen()}>
+          <div class="modal-backdrop" onClick={closeAccount}>
+            <div
+              class="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Microsoft account"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div class="modal-head">
+                <h2>Microsoft account</h2>
+                <button
+                  class="close"
+                  aria-label="Close"
+                  onClick={closeAccount}
+                >
+                  ×
+                </button>
+              </div>
+
+              <Show
+                when={accounts().length > 0}
+                fallback={
+                  <div class="signin">
+                    <p class="muted">
+                      Sign in to play Minecraft: Java Edition. Your password
+                      never touches Kestrel — you approve a short code in your
+                      browser.
+                    </p>
+
+                    <Show
+                      when={device()}
+                      fallback={
+                        <>
+                          <Show when={authError()}>
+                            <p class="error">{authError()}</p>
+                          </Show>
+                          <Show when={signInStatus() === "expired"}>
+                            <p class="error">
+                              That code expired. Start again to get a fresh
+                              one.
+                            </p>
+                          </Show>
+                          <Show when={signInStatus() === "declined"}>
+                            <p class="error">Sign-in was declined.</p>
+                          </Show>
+                          <Show when={!boot()?.azureConfigured}>
+                            <p class="error">
+                              Sign-in is not configured. Set{" "}
+                              <code>azureClientId</code> in{" "}
+                              <code>~/.config/kestrel/config.json</code> (public
+                              client with the device-code flow enabled).
+                            </p>
+                          </Show>
+                          <button
+                            class="btn primary"
+                            disabled={
+                              !boot()?.azureConfigured ||
+                              signInStatus() === "starting"
+                            }
+                            onClick={() => void startSignIn()}
+                          >
+                            {signInStatus() === "starting"
+                              ? "Contacting Microsoft…"
+                              : "Continue with Microsoft"}
+                          </button>
+                        </>
+                      }
+                    >
+                      {(code) => (
+                        <div class="device">
+                          <p class="muted">{code().message}</p>
+                          <div class="device-row">
+                            <span class="device-code">{code().userCode}</span>
+                            <button
+                              class="btn ghost"
+                              onClick={() => void copyCode()}
+                            >
+                              {copied() ? "Copied" : "Copy"}
+                            </button>
+                          </div>
+                          <button
+                            class="link"
+                            onClick={() =>
+                              void api.openExternal(code().verificationUri)
+                            }
+                          >
+                            Open{" "}
+                            {code().verificationUri.replace(
+                              /^https?:\/\//,
+                              "",
+                            )}
+                          </button>
+                          <p class="hint">
+                            {signInStatus() === "error" && authError()
+                              ? authError()
+                              : "Waiting for approval… this window updates automatically."}
+                          </p>
+                          <Show
+                            when={signInStatus() === "error"}
+                            fallback={
+                              <button
+                                class="btn ghost"
+                                onClick={closeAccount}
+                              >
+                                Cancel
+                              </button>
+                            }
+                          >
+                            <button
+                              class="btn primary"
+                              onClick={() => void startSignIn()}
+                            >
+                              Try again
+                            </button>
+                          </Show>
+                        </div>
+                      )}
+                    </Show>
+                  </div>
+                }
+              >
+                <div class="signed-in">
+                  <div class="account-big">
+                    <span class="profile-avatar big">
+                      {accounts()[0].username.slice(0, 1).toUpperCase()}
+                    </span>
+                    <div>
+                      <strong>{accounts()[0].username}</strong>
+                      <div class="mono muted">{accounts()[0].uuid}</div>
+                    </div>
+                  </div>
+                  <p class="muted">
+                    The session lives in the system keyring and is refreshed
+                    silently on startup.
+                  </p>
+                  <button class="btn ghost" onClick={() => void signOut()}>
+                    Sign out
+                  </button>
+                </div>
+              </Show>
+            </div>
+          </div>
+        </Show>
+
         <Show when={notice()}>
           <div class="toast" onClick={() => setNotice(null)}>
             {notice()}
@@ -267,3 +601,4 @@ export default function App() {
     </div>
   );
 }
+

@@ -23,7 +23,7 @@ Built in stages; see `PERFORMANCE.md` for measured numbers.
 
 - [x] Stage 1 — Tauri scaffold, instant cache-first UI, `bench` harness (see PERFORMANCE.md)
 - [x] Stage 2 — Version manifest, downloads, shared cache, vanilla launch
-- [ ] Stage 3 — Microsoft auth (device code) + keyring
+- [x] Stage 3 — Microsoft auth (device code) + keyring
 - [ ] Stage 4 — Java runtime management
 - [ ] Stage 5 — Fabric, Modrinth browser, Optimized preset
 - [ ] Stage 6 — Performance work (pre-warm, AppCDS, JVM presets)
@@ -70,7 +70,8 @@ KESTREL_DEV_AUTH=1 ./target/release/kestrel dev-launch 1.20.4
 
 `dev-launch` is a development smoke test: it uses a placeholder token (never
 persisted, disabled unless `KESTREL_DEV_AUTH=1`) and launches the vanilla title
-screen. It is not an offline-mode feature. Real accounts arrive in stage 3.
+screen. It is not an offline-mode feature. Sign in with a real Microsoft account
+from the launcher UI instead.
 
 ### Layout
 
@@ -107,8 +108,24 @@ Cached UI state lives in the same directory; the shared content cache lives in
 portable/test environment.
 
 Microsoft OAuth needs an Azure application (client) ID. Set
-`KESTREL_AZURE_CLIENT_ID` or `azureClientId` in `config.json`. See
-`docs/AUTH.md` (stage 3).
+`KESTREL_AZURE_CLIENT_ID` or `azureClientId` in `config.json`. The app is a
+public client using the device-code flow, so it needs no secret and no redirect
+URI. Setup details and troubleshooting live in [docs/AUTH.md](docs/AUTH.md).
+
+## Accounts
+
+Click **Sign in**, open the shown `microsoft.com/link` address, and enter the
+short code. Kestrel polls Microsoft until you approve, then builds the
+Xbox Live → XSTS → Minecraft session. Passwords never touch the launcher and no
+embedded browser is used.
+
+- Tokens are stored in the **system keyring** (Secret Service on Linux), never
+  in `state.json` or logs.
+- Sessions refresh silently on startup; expired sessions ask you to sign in
+  again.
+- One account is active at a time in stage 3; account management and multiple
+  profiles arrive later.
+- **Sign out** deletes the keyring entry and the cached account summary.
 
 ## Logs and timing
 

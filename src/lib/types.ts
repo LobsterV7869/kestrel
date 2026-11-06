@@ -60,3 +60,23 @@ export interface Config {
   prewarmPageCache: boolean;
   closeToTray: boolean;
 }
+
+export interface DeviceCodeInfo {
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+  interval: number;
+  message: string;
+}
+
+export type AuthStatus =
+  | "pending"
+  | "slowDown"
+  | "expired"
+  | "declined"
+  | "success";
+
+export interface AuthPoll {
+  status: AuthStatus;
+  account: AccountSummary | null;
+}
