@@ -15,6 +15,8 @@ import type {
   Bootstrap,
   DeviceCodeInfo,
 } from "./lib/types";
+import CreateInstanceModal from "./components/CreateInstanceModal";
+import ModsPage from "./components/ModsPage";
 
 const PRESET_LABEL: Record<string, string> = {
   optimized: "Optimized",
@@ -54,6 +56,8 @@ export default function App() {
   const [state, setState] = createSignal<AppState | null>(null);
   const [startupMs, setStartupMs] = createSignal<number | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
+  const [view, setView] = createSignal<"home" | "mods">("home");
+  const [instanceOpen, setInstanceOpen] = createSignal(false);
 
   const [accountOpen, setAccountOpen] = createSignal(false);
   const [device, setDevice] = createSignal<DeviceCodeInfo | null>(null);
@@ -287,6 +291,28 @@ export default function App() {
           </span>
         </div>
 
+        <nav class="side-nav" aria-label="Sections">
+          <button
+            class="side-nav-item"
+            classList={{ active: view() === "home" }}
+            onClick={() => setView("home")}
+          >
+            <span class="side-nav-icon">◈</span>
+            <span>Play</span>
+          </button>
+          <button
+            class="side-nav-item"
+            classList={{ active: view() === "mods" }}
+            onClick={() => setView("mods")}
+          >
+            <span class="side-nav-icon">▦</span>
+            <span>Mods</span>
+            <Show when={profiles().length > 0}>
+              <span class="side-nav-badge">K</span>
+            </Show>
+          </button>
+        </nav>
+
         <div class="section-head">
           <span>Profiles</span>
           <span class="count">{profiles().length}</span>
@@ -317,8 +343,14 @@ export default function App() {
 
           <Show when={profiles().length === 0}>
             <div class="empty">
-              <p>No profiles yet.</p>
-              <p class="muted">Profile creation arrives in stage 8.</p>
+              <p>No instances yet.</p>
+              <p class="muted">Create a Fabric or Quilt instance to begin.</p>
+              <button
+                class="btn primary sm"
+                onClick={() => setInstanceOpen(true)}
+              >
+                Create instance
+              </button>
             </div>
           </Show>
         </div>
@@ -338,6 +370,17 @@ export default function App() {
       </aside>
 
       <main class="main">
+        <Show
+          when={view() === "home"}
+          fallback={
+            <ModsPage
+              profile={selected()}
+              onStateChange={(next) => setState(next)}
+              onCreateInstance={() => setInstanceOpen(true)}
+              onNotice={(message) => setNotice(message)}
+            />
+          }
+        >
         <header class="topbar">
           <div class="titles">
             <h1>{selected()?.name ?? "Welcome to Kestrel"}</h1>
@@ -353,13 +396,13 @@ export default function App() {
                 Sign in
               </button>
             </Show>
-            <button class="btn ghost" disabled title="Stage 8">
-              New profile
+            <button class="btn ghost" onClick={() => setInstanceOpen(true)}>
+              New instance
             </button>
             <button
               class="btn primary"
               disabled
-              title="Launch from the UI arrives with profiles in stage 8"
+              title="Launching from the UI is not part of this build yet"
             >
               Launch
             </button>
@@ -374,8 +417,8 @@ export default function App() {
                 <h2>Built for instant starts</h2>
                 <p class="muted">
                   Kestrel paints from a local cache before any network call and
-                  keeps the game launch on a prebuilt classpath. Create a
-                  profile to get going.
+                  keeps the game launch on a prebuilt classpath. Create an
+                  instance to get going.
                 </p>
               </div>
             </section>
@@ -446,6 +489,18 @@ export default function App() {
         </section>
 
         <footer class="legal">{boot()?.legal ?? ""}</footer>
+        </Show>
+
+        <Show when={instanceOpen()}>
+          <CreateInstanceModal
+            onClose={() => setInstanceOpen(false)}
+            onCreated={(next, warning) => {
+              setState(next);
+              if (warning) setNotice(warning);
+            }}
+            onNotice={(message) => setNotice(message)}
+          />
+        </Show>
 
         <Show when={accountOpen()}>
           <div class="modal-backdrop" onClick={closeAccount}>
